@@ -1,0 +1,227 @@
+# IMPORTAMOS AS BIBLIOTECAS NECESSÁRIAS PARA ANALIZAR O ARQUIVO
+import pandas as pd
+import numpy as np
+import matplotlib.pyplot as plt
+import matplotlib.dates as mdates
+import seaborn as sns
+
+# CONFIGURAÇÃO VISUAL DO GRÁFICO
+sns.set_theme(style="whitegrid")
+
+# DEFININDO LIMITES IDEAIS E CRÍTICOS PARA CADA MÁQUINA
+LIMITES_MAQUINAS = {
+    "Tear_Jato": {"ideal": 50.0, "critico": 65.0},
+    "Rama_Acabamento": {"ideal": 135.0, "critico": 155.0}
+}
+
+# CRIANDO A CLASSE "MÃE" PARA DEFINIR LIMITES A CADA LINHA DE DADO
+class MonitorEnergiaFabril:
+
+    def __init__(self, id_maquina):
+        self.id_maquina = id_maquina
+
+        # DEFINE LIMITES BASEADO NO iD DA MÁQUINA
+        if "Rama" in id_maquina:
+            self.limite_ideal = LIMITES_MAQUINAS["Rama_Acabamento"]["ideal"]
+            self.limite_critico = LIMITES_MAQUINAS["Rama_Acabamento"]["critico"]
+        else:
+            self.limite_ideal = LIMITES_MAQUINAS["Tear_Jato"]["ideal"]
+            self.limite_critico = LIMITES_MAQUINAS["Tear_Jato"]["critico"]
+
+        self.historico_data = []
+        self.historico_consumo = []
+        # STATUS DE MÁQUINA COMEÇA COMO "false" E SE TORNA "true" CASO O LIMITE CRÍTICO SEJA SUPERADO
+        self.status_parada = False
+
+        print(f"✅ MONITOR INICIADO: '{self.id_maquina}'\n")
+        print(f"--> METAS: IDEAL < {self.limite_ideal}kW | CRÍTICO > {self.limite_critico}kW")
+
+        # VERIFICA SE O CONSUMO DA MÁQUINA EXIGE UM ALERTA OU UM PARADA
+    def _verificar_seguranca(self, consumo, data_hora):
+        """Verifica se o consumo exige alerta ou parada."""
+
+        # CASO A MÁQUINA JÁ TENHA PARADO, NÃO PROCESSA NOVO ALERTA
+        if self.status_parada:
+            return "PARADA_ANTERIOR"
+
+        # CASO O CONSUMO SEJA MAIOR QUE O LIMITE CRÍTICO IRÁ DESLIGAR
+        if consumo >= self.limite_critico:
+            print(f"🛑 PERIGO | {self.id_maquina} atingiu {consumo}kW em {data_hora} -> PARADA ACIONADA!")
+            self.status_parada = True
+            return "CRITICO"
+
+        # CASO O CONSUMO SEJA MAIOR QUE O LIMITE IDEAL IRÁ PASSAR UM AVISO
+        elif consumo > self.limite_ideal:
+            print(f"⚠️ ALERTA | {self.id_maquina}: {consumo}kW (Acima da meta)")
+            return "ALERTA"
+
+        return "NORMAL"
+
+        # MÉTODO PARA ANALISAR LINHA POR LINHA DO ARQUIVO
+    def processar_lote_pandas(self, df_maquina):
+
+        # AQUI ASSUMIMOS QUE NÃO HOUVE ERROS ANTES DE INICIAR O LOOP
+        alertas = 0
+        criticos = 0
+        ponto_parada = None
+
+        print(f"PROCESSANDO {len(df_maquina)} REGISTROS ...")
+
+        # 'df_maquina.iterrows()' TRANSFORMA A TABELA DE DADOS EM UMA FILA
+        # A CADA ITERAÇÃO DO LOOP A VARIAVEL LINHA RECEBE OS DADOS DE UM HORÁRIO ESPECÍFICO
+        for index, linha in df_maquina.iterrows():
+            consumo = linha['consumo_kw']
+            data = linha['data_hora']
+            status_sensor = linha['status_operacional']
+
+            # FILTRO PARA TRATAR VALORES DE MÁQUINA PARADA
+            if status_sensor == 'PARADA':
+              # AQUI ADIICONAMOS OS DADOS AO GRÁFICO, INDEPENDETE DO RESULTADO POSITIVO OU NEGATIVO
+                self.historico_consumo.append(consumo)
+                self.historico_data.append(data)
+                continue
+
+            # CHAMA O MÉTODO PARA VERIFICAR A SEGURANÇA CONFORME
+            resultado = self._verificar_seguranca(consumo, data)
+            self.historico_consumo.append(consumo)
+            self.historico_data.append(data)
+
+            # AQUI SOMAMOS OS VALORES REFERNETE A 'ALERTA' OU 'CRITICO'
+            if resultado == "ALERTA":
+                alertas += 1
+            elif resultado == "CRITICO":
+                criticos += 1
+                if ponto_parada is None:
+                    ponto_parada = (data, consumo) # REGISTRA O MOMENTO DA PARADA
+
+        return alertas, criticos, ponto_parada
+
+# METODO PARA GERAR O GRÁFICO
+    def gerar_grafico_analise(self, ponto_parada=None):
+        """
+        Gera um gráfico visualmente limpo, com cores mais fortes, camadas corrigidas
+        e melhor contraste para visualização.
+        """
+        if not self.historico_consumo:
+            return
+
+        # PREPARAÇÃO DE DADOS, GARANTE ORDENAÇÃO
+        dados = sorted(zip(self.historico_data, self.historico_consumo))
+        x = [d[0] for d in dados]
+        y = [d[1] for d in dados]
+
+        # CONFIGURAÇÃO DA FIGURA
+        fig, ax = plt.subplots(figsize=(12, 6))
+
+        # LIMITE SUPERIOR DO GRÁFICO
+        y_max = max(max(y), self.limite_critico) * 1.1
+
+        # BACKGROUND
+        # VERDE
+        ax.axhspan(0, self.limite_ideal, color='#a8e6cf', alpha=0.5, label='EFICIENTE', zorder=0)
+        # AMARELO
+        ax.axhspan(self.limite_ideal, self.limite_critico, color='#ffeb3b', alpha=0.3, label='ALERTA', zorder=0)
+        # VERMELHO
+        ax.axhspan(self.limite_critico, y_max, color='#ff8a80', alpha=0.4, label='CRÍTICO', zorder=0)
+
+        # PLOTAGEM DA LINHA
+        ax.plot(x, y, color='#2c3e50', linewidth=2.5, label='CONSUMO (kW)', zorder=2)
+
+        # PONTOS DE ALERTA
+        y_array = np.array(y)
+        x_array = np.array(x)
+        mask_alerta = y_array > self.limite_ideal
+        if any(mask_alerta):
+             ax.scatter(x_array[mask_alerta], y_array[mask_alerta], color='#e67e22', s=20, zorder=3)
+
+        # LINHAS DE REFERENCIA
+        ax.axhline(self.limite_ideal, color='#1b5e20', linestyle='--', linewidth=1.5, alpha=0.8, zorder=2)
+        ax.axhline(self.limite_critico, color='#b71c1c', linestyle='--', linewidth=1.5, alpha=0.8, zorder=2)
+
+        # DESTAQUE DE PARADA (SE HOUVER)
+        if ponto_parada:
+            data_p, valor_p = ponto_parada
+            # CIRCÚLO DE DESTAQUE
+            ax.plot(data_p, valor_p, 'o', color='#d50000', markersize=12, markeredgecolor='white', markeredgewidth=2, zorder=5)
+            ax.annotate(f'PARADA\n{data_p.strftime("%H:%M")}',
+                        xy=(data_p, valor_p),
+                        xytext=(15, 25), textcoords='offset points',
+                        arrowprops=dict(arrowstyle="->", connectionstyle="arc3,rad=.2", color='#d50000', lw=2),
+                        bbox=dict(boxstyle="round,pad=0.4", fc="#ffebee", ec="#d50000", lw=1.5),
+                        fontsize=10, fontweight='bold', color='#c62828')
+
+        # FORMATAÇÃO DE EIXOS
+        ax.set_title(f"MONITORAMENTO: {self.id_maquina}", fontsize=16, fontweight='bold', pad=20, loc='left')
+        ax.set_ylabel("cONSUMO (kW)", fontsize=11, fontweight='bold')
+
+        # Formata datas no eixo X
+        ax.xaxis.set_major_formatter(mdates.DateFormatter('%H:%M'))
+        ax.xaxis.set_major_locator(mdates.HourLocator(interval=2))
+        fig.autofmt_xdate(rotation=0, ha='center')
+
+        # LIMITES
+        ax.set_xlim(min(x), max(x))
+        ax.set_ylim(0, y_max)
+
+        # REMOVE BORDAS DESNECESSÁRIAS
+        sns.despine(left=True, bottom=False)
+        # GRID BRANCO
+        ax.grid(axis='y', linestyle='-', alpha=0.3, color='white', zorder=1)
+
+        # LEGENDA COM FUNDO BRANCO
+        ax.legend(loc='upper right', frameon=True, framealpha=1, edgecolor='#cccccc', ncol=4, fontsize=9)
+
+        plt.tight_layout()
+        plt.show()
+
+# ----------------------------------------------------------------------
+# EXECUÇÃO DO SISTEMA (MAIN)
+# ----------------------------------------------------------------------
+if __name__ == "__main__":
+    ARQUIVO = "leituras_energia_fabrica.csv"
+
+    print("===== TRATATIVA DE DADOS PARA EMPRESSA AMJ´N =====")
+    print("\n")
+    try:
+        # CARREGAR '.csv'
+        print(f"📂 LENDO OS ARQUIVOS: {ARQUIVO}...")
+        df = pd.read_csv(ARQUIVO)
+
+        # CONVERTE A COLUNA DE DATA PARA 'date'
+        df['data_hora'] = pd.to_datetime(df['data_hora'])
+
+        # IDENTIFICAR AS MÁQUINAS DO ARQUIVO
+        maquinas_identificadas = df['id_maquina'].unique()
+        print(f"⚙️MÁQUINAS ENCONTRADAS: {maquinas_identificadas}\n")
+
+        # LOOP PARA ANALISAR CADA MÁQUINA, CRIA O MONITOR E PROCESSA OS DADOS
+        for maquina in maquinas_identificadas:
+            print(f"{'='*50}")
+
+            # INSTANCIA A CLASSE
+            monitor = MonitorEnergiaFabril(maquina)
+
+            # FILTRA OS DADOS APENAS DA MÁQUINA TRATADA
+            dados_da_maquina = df[df['id_maquina'] == maquina].sort_values('data_hora')
+
+            # PROCESSAS AS ESTATISTICAS
+            n_alertas, n_criticos, momento_parada = monitor.processar_lote_pandas(dados_da_maquina)
+
+            # RELATÓRIO EM TEXTO
+            print(f"\n📊 RESUMO DO TURNO: {maquina}\n")
+            print(f"• OCORRÊNCIA ACIMA DA META: {n_alertas}")
+            print(f"• PICOS CRÍTICOS: {n_criticos}")
+            if momento_parada:
+                print(f"• 🛑 STATUS: MÁQUINA TERIA SIDO PARADA ÀS {momento_parada[0].strftime('%H:%M')}\n")
+            else:
+                print(f"• ✅ STATUS: OPERAÇÃO SEGURA\n")
+
+            # GERA O GRÁFICO VISUAL
+            monitor.gerar_grafico_analise(momento_parada)
+            print("\n\n")
+
+# TRATANDO POSSÍVEIS ERROS COM O ARQUIVO
+    except FileNotFoundError:
+        print("❌ O ARQUIVO '.csv' NÃO FOI ENCONTRADO, CARREGUE E TENTE NOVAMENTE")
+    except Exception as e:
+        print(f"❌ ERRO INESPERADO: {e}")
